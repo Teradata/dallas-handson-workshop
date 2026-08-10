@@ -2,7 +2,7 @@
 name: hello-tera
 title: Hello Tera
 description: A minimal demo skill that greets the user, confirms the skills registry is connected, and briefly explains how skills work. Use for smoke-testing the registry during customer demos.
-domain: demo
+domain: general
 version: 1.0.0
 status: active
 metadata:
