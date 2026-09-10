@@ -1,18 +1,26 @@
 ---
 name: context-engine-mcp
 title: Teradata Context Engine MCP
-description: 'The Teradata Context Engine is a software infrastructure layer that continuously collects, processes, stores, retrieves, and delivers relevant contextual information to applications and AI systems — enabling situation-aware decisions rather than treating each interaction in isolation. It acts as the situational awareness brain, answering: Who is the user? What are they doing? What do they need? What is relevant right now? This skill routes every data product, GDP, knowledge graph, lineage and data quality question to the GDP Supervisor, which answers all of them end-to-end. Use when asking about data products, GDP, entities, lineage, data quality. Triggers for /data-product command.'
+description: 'Query the Teradata Context Engine via polling — for legacy MCP clients (pre-2026-07-28) that cannot subscribe to resource notifications. Routes all data product, GDP, knowledge graph, lineage, and data quality questions to the GDP Supervisor. Results are obtained by polling check_gdp_job. Use when asking about data products, GDP, entities, lineage, data quality. Triggers for /data-product command.'
 when_to_use: 'Triggers on: data product, GDP, governed data product, knowledge graph, lineage, upstream, downstream, data quality, quality score, subject area, entity, element, context engine'
 metadata:
   author: context-engine-team
-  version: "2.1"
+  version: "1.2"
 ---
 
-# Context Engine mcp (Go — 2026-07-28)
+# Context Graph MCP (Go — Legacy Polling)
+
+> **LEGACY CLIENT SKILL — for MCP clients that pre-date the 2026-07-28 protocol.**
+>
+> This skill applies when your client CANNOT use `subscriptions/listen` or receive
+> `notifications/resources/updated` push events. If your client supports those,
+> use SKILL.md instead and ignore this file.
+>
+> Legacy polling path: `start_gdp_job` → `check_gdp_job(wait=15)` → repeat until terminal.
 
 ## What is the Context Engine?
 
-The Teradata Context Engine is a software infrastructure layer that continuously collects, processes, stores, retrieves, and delivers relevant contextual information to applications and AI systems at the precise moment it's needed — enabling the system to make informed, situation-aware decisions rather than treating each interaction in isolation.
+The Teradata Context Engine is a software infrastructure layer that continuously collects, processes, stores, retrieves, and delivers relevant contextual information to applications and AI systems at the precise moment it is needed — enabling the system to make informed, situation-aware decisions rather than treating each interaction in isolation.
 
 It acts as the **situational awareness brain** of a system, answering the fundamental questions:
 - **Who is the user?** — identity, profile, roles, preferences
@@ -23,8 +31,9 @@ It acts as the **situational awareness brain** of a system, answering the fundam
 ## How to Use This Skill
 
 Routes ALL data product and GDP questions to the GDP Supervisor via `start_gdp_job`.
-Progress and results are delivered automatically via push notifications, so no routine
-polling is needed (`check_gdp_job` remains available as a fallback if pushes stop).
+
+Because this client cannot receive push notifications, you poll progress using
+`check_gdp_job` with `wait=15` until a terminal status is returned.
 
 Lineage, quality, entity and subject-area questions are **also** answered this way.
 They are not separate tools — you ask the Supervisor, and it reaches the graph on your behalf.
@@ -36,29 +45,28 @@ They are not separate tools — you ask the Supervisor, and it reaches the graph
 > **WARNING — TOOL BOUNDARY — READ THIS BEFORE EVERY ACTION**
 >
 > You have access to multiple tools. For EVERYTHING in this skill you MUST use
-> ONLY the context-engine mcp server tools listed below. No exceptions, ever.
+> ONLY the CE graph MCP server tools listed below. No exceptions, ever.
 >
-> **For workspace discovery:** ONLY call `list_workspaces` from the context-engine mcp
+> **For workspace discovery:** ONLY call `list_workspaces` from the CE graph MCP
 > server and show the exact results without making up things. NEVER use SQL queries,
 > `SELECT * FROM dbc.databases`, Teradata system tables, JDBC tools, or any other
 > non-CE-MCP tool to find workspaces. Teradata database names are NOT Context Engine
 > workspaces — they are completely different things.
 >
-> **For GDP questions:** ONLY use `start_gdp_job`. NEVER call any SQL tool, analyst
-> tool, or non-MCP tool. The GDP Supervisor handles everything internally.
+> **For GDP questions:** ONLY use `start_gdp_job` then `check_gdp_job`. NEVER call
+> any SQL tool, analyst tool, or non-MCP tool. The GDP Supervisor handles everything
+> internally.
 >
 > **When working on data product creation or any GDP task — DO NOT use any other
 > tools outside the CE MCP server.** All tools required for data product creation,
-> modelling, pipelines, and publication are already enabled inside the GDP
-> Supervisor by default.
+> modelling, pipelines, and publication are already enabled inside the GDP Supervisor
+> by default.
 >
 > **For GDP and data product questions, use ONLY these tools:**
 > - `list_workspaces` — workspace discovery only
 > - `start_gdp_job` — start a GDP Supervisor job (all data product questions)
-> - `cancel_gdp_job` — stop a running job when the user asks to cancel
->
-> The server also exposes graph read tools (search, lineage, schema, DQ/SLA) for
-> direct graph queries, but all GDP and data product questions go through `start_gdp_job`.
+> - `check_gdp_job` — poll an in-progress job (legacy polling path)
+> - `cancel_gdp_job` — request cancellation of a running job
 
 ## When to Use
 
@@ -74,33 +82,49 @@ Every workspace-scoped tool requires a `workspace_id`. Resolve it once per conve
 |------|---------|
 | `list_workspaces` | Discover available workspace IDs and names — show exact results, do not make up names or IDs; call once, not workspace-scoped, requires tenant-admin rights |
 | `start_gdp_job` | Start a GDP Supervisor job — use for ALL questions, fast or slow |
+| `check_gdp_job` | Poll an in-progress job; pass `wait=15` so the server holds the connection for up to 15s before returning |
+| `cancel_gdp_job` | Ask a running job to stop |
 
-### How progress and results are delivered
+### How progress and results are delivered (legacy polling)
 
-This server uses the **2026-07-28 MCP spec**: results arrive by **push** (resource subscriptions), so you don't poll in the normal flow. `check_gdp_job` polling remains only as a fallback for when pushes stop or monitoring is degraded (see below).
+This client does NOT use resource subscriptions. Instead:
 
-1. `start_gdp_job` returns a `resource_uri` (e.g. `gdp://jobs/job_abc`) in the JSON and a `ResourceLink` MCP content item
-2. Subscribe to that URI via `subscriptions/listen`
-3. The server sends `notifications/resources/updated` when job status, progress, or thinking changes — and also as a periodic keepalive, so a notification does not always mean something changed
-4. On each notification, always re-read the `resource_uri` resource to see what changed (if anything). Track `progress` and `thinking` **independently** and relay each one only when its own value differs from the last value you relayed for that field — `progress` is live Supervisor updates (tool activity or clarification prompts) and `thinking` is the Supervisor's extended-thinking reasoning while the job runs; both are moving tails that may change or clear between notifications, not the final answer. `thinking` is **cumulative** — each read contains everything so far, so relay only the newly-added portion since the value you last relayed, not the whole field again; it can shift as older reasoning ages out or resets between turns, so if you cannot cleanly diff, just show the current value
-5. When the resource returns `status: completed`, show the `result` to the user
+1. Call `start_gdp_job` — record `job_id` and `session_id` from the response.
+2. **Check the `status` field immediately.** If it is already `completed`, `failed`, or `cancelled`, you are done — skip polling entirely.
+3. If `status` is `working` or `input_required`, begin polling: call `check_gdp_job(job_id=..., wait=15, workspace_id=...)` in a loop.
+4. On each poll response: relay any `progress` message to the user, then check `status`.
+
+> **Progress messages are a live tail — not the answer.** They may be superseded or
+> disappear between polls. Never treat a progress message as the result.
+> Only `status: COMPLETED` with a populated `result` field is the authoritative answer.
+
+> **`resource_uri` and `resource_link`** are present in the `start_gdp_job` response
+> (e.g. `gdp://jobs/job_abc`). Legacy clients MUST ignore these fields and use
+> `check_gdp_job` for polling instead.
+
+> **Timeout fallback:** if polling has continued for approximately 30 minutes without
+> a terminal status, stop polling. Tell the user: *"The job is still running but I have
+> been waiting a long time. Your job_id is `{job_id}` and session_id is `{session_id}` —
+> ask me again later and I will resume from where we left off."*
+> The job continues running unaffected on the server.
 
 ### Job statuses
 
-| Status | Terminal? | Meaning |
-|--------|-----------|---------|
-| `working` | no | Job is PENDING, RUNNING, or CANCEL_REQUESTED — still going |
-| `input_required` | no | The Supervisor needs clarification from the user before it can continue — ask the user the question in `progress` and pass the answer back via a follow-up `start_gdp_job` with the same `session_id` |
-| `completed` | yes | Finished successfully — `result` is present |
-| `failed` | yes | Finished with an error — `error` is present. Check `job_status` for the raw reason: `ORPHANED` means the worker crashed mid-run (offer to restart); `PURGED` means the record aged out of retention (offer to resubmit) |
-| `cancelled` | yes | Stopped at the caller's request |
+**Important:** `start_gdp_job` returns a lowercase mapped `status` field. `check_gdp_job` returns the raw **uppercase** status from kp-service-layer — no transformation applied.
 
-Treat `completed`, `failed`, and `cancelled` as terminal — stop waiting and show result or error.
-Treat `input_required` as a pause — relay the question in `progress` to the user and continue the job with their answer.
+| `start_gdp_job` status | `check_gdp_job` status | Terminal? | Meaning |
+|------------------------|------------------------|-----------|---------|
+| `working` | `PENDING` / `RUNNING` / `CANCEL_REQUESTED` | no | Job is in progress — keep polling |
+| `input_required` | `INPUT_REQUIRED` | no | The Supervisor needs clarification — read the question from `progress`, ask the user, then pass their answer via a follow-up `start_gdp_job` with the same `session_id` |
+| `completed` | `COMPLETED` | yes | Finished successfully — `result` is present |
+| `failed` | `FAILED` | yes | Finished with an error — `error` is present; check `job_status` for the raw reason (`ORPHANED`, `PURGED`, etc.) |
+| `cancelled` | `CANCELLED` | yes | Stopped at the caller's request |
+
+Treat `completed`/`COMPLETED`, `failed`/`FAILED`, and `cancelled`/`CANCELLED` as terminal — stop polling and show result or error.
 
 ## Procedure: Resolve Workspace
 
-> **Use ONLY `list_workspaces` from the context-engine mcp server. Never call any other tool.
+> **Use ONLY `list_workspaces` from the CE graph MCP server. Never call any other tool.
 > Show results exactly as returned — do not make up names or IDs.
 > Teradata database names are NOT Context Engine workspaces.**
 
@@ -131,7 +155,7 @@ Run this **once per conversation** before calling any workspace-scoped tool.
    MCP server is connected, or tell me your workspace id and I'll continue."*
 5. Store the resolved `workspace_id` for the rest of the conversation.
 
-## Procedure: GDP Supervisor Job
+## Procedure: GDP Supervisor Job (Legacy Polling)
 
 Use for ALL data product and GDP questions, including:
 - **Data product discovery** — what exists, who owns it, certification status, subject area
@@ -143,42 +167,29 @@ Use for ALL data product and GDP questions, including:
 - **Any other GDP Supervisor question**
 
 1. **Start** — call `start_gdp_job(message=..., workspace_id=...)`.
-   Record `job_id`, `session_id`, and `resource_uri` from the response.
+   Record `job_id` and `session_id` from the response.
+   The response also contains `resource_uri` and `resource_link` — **ignore these**;
+   legacy clients use `check_gdp_job` for polling, not resource subscriptions.
 
-2. **Check status before subscribing** — inspect the `status` field returned directly
-   by `start_gdp_job`. If it is already `completed`, `failed`, or `cancelled`, skip
-   directly to step 3 or 4 — do not subscribe or wait for push notifications.
+2. **Check status immediately** — inspect the `status` field returned by `start_gdp_job`.
+   - `completed`, `failed`, or `cancelled` → skip to step 4 or 5 — no polling needed.
+   - `input_required` → skip to step 3b.
+   - `working` → proceed to step 3.
 
-   If status is `working`, subscribe to `resource_uri` via `subscriptions/listen` and
-   wait for `notifications/resources/updated` push notifications. Some pushes are periodic
-   keepalives, so on each one re-read the resource and relay `progress` or `thinking` only
-   when its value changed since the one you last relayed — `thinking` shows the Supervisor's
-   extended-thinking reasoning while the job runs and, like `progress`, is a moving tail that
-   may change or clear between notifications.
+3. **Poll** — call `check_gdp_job(job_id=..., wait=15, workspace_id=...)`.
 
-   > **Progress and thinking messages are a live tail — not the answer.** Both may be
-   > superseded or disappear between notifications. A push may carry `thinking` (Supervisor
-   > reasoning), `progress` (live Supervisor updates — tool activity or clarification
-   > prompts), or both — relay both to the user as they
-   > arrive. Never treat either as the result.
-   > Only `status: completed` with a populated `result` field is the authoritative answer.
+   3a. Status is a working status (`PENDING`, `RUNNING`, `CANCEL_REQUESTED`): relay
+       any `progress` message to the user, loop back to step 3.
 
-   > **`monitoring: degraded`** — if a resource read returns `monitoring: "degraded"` and
-   > a `poll_error` field, the Go server has temporarily lost sight of the job (e.g. a
-   > brief network blip or a service restart). This is **NOT a job failure** — the job is
-   > likely still running. Do NOT tell the user the job failed. Instead tell them:
-   > *"I've temporarily lost connection to the job monitor — the job is still running.
-   > I'll keep watching and update you when monitoring resumes."*
-   > If pushes stop arriving entirely, re-subscribe to `resource_uri` to restart monitoring
-   > with fresh credentials, or fall back to `check_gdp_job(job_id=...)` which queries
-   > kp-service-layer directly and is unaffected by monitor state.
+   3b. Status is `INPUT_REQUIRED`: read the question from the `progress` field and ask
+       it to the user. Once they reply, call `start_gdp_job` again with the same
+       `session_id` and the user's answer as `message`. Return to step 2.
 
-   > **Timeout fallback:** if no push notification arrives for approximately 30 minutes,
-   > stop waiting. Tell the user: *"The job is still running but I've lost the connection.
-   > Your job_id is `{job_id}` and session_id is `{session_id}` — ask me again later and
-   > I'll resume from where we left off."* The job continues running unaffected.
+   3c. Status is terminal (`COMPLETED`, `FAILED`, `CANCELLED`): proceed to step 4 or 5.
 
-3. **Show result** — when `status: completed`, render ALL result content exclusively
+   > **`check_gdp_job` returns raw uppercase status.** Do not expect lowercase values.
+
+4. **Show result** — when status is `COMPLETED`, render ALL result content exclusively
    inside `create_ui_app`. **Nothing goes into the chat conversation text.** After the
    UI app renders, write ONLY a brief next-action prompt in chat.
 
@@ -189,53 +200,43 @@ Use for ALL data product and GDP questions, including:
    | Source-to-target attribute mapping table | `table` |
    | Narrative text, analysis, or mixed prose + structured data | `report` |
 
-   **Table results** — use a `table` component with these exact columns, never collapse
-   or omit any row:
+   **Table results** — use a `table` component with these exact columns, never collapse or omit any row:
 
    | Target Attribute | Source Column | Source URN | Confidence | Rationale |
 
    Unmapped attributes go at the bottom, clearly marked **UNMAPPED**.
 
-   **Report results** — use a `report` component. Render the Supervisor's output
-   verbatim without modification or summarisation unless the user asked for a summary.
+   **Report results** — use a `report` component. Render the Supervisor's output verbatim
+   without modification or summarisation unless the user asked for a summary.
 
    If `result_truncated` is true, add a visible notice **inside the `create_ui_app`
-   component** — the result was too large to return in full and the user is not seeing
-   all of it.
+   component** — the result was too large to return in full and the user is not seeing all of it.
 
-4. **On failure** — if `status` is `failed` or `cancelled`, report the status and
-   any `error` detail to the user verbatim. Check `job_status` for the raw reason:
+5. **On failure** — if status is `FAILED` or `CANCELLED`, report the status and any
+   `error` detail to the user verbatim. Check `job_status` for the raw reason:
    - `ORPHANED` — the worker crashed mid-run; offer to start the job again
    - `PURGED` — the record aged out of retention; offer to resubmit
    - Any other value — surface as-is
 
-5. **Session continuity** — on follow-up turns, pass `session_id` exactly as
-   returned by `start_gdp_job`. Never pass `job_id` where `session_id` is
-   expected. This matters: the schema lock and governance approvals live on the
-   session, so a follow-up sent without it starts from scratch and cannot
-   progress a build.
+6. **Session continuity** — on follow-up turns, pass `session_id` exactly as returned
+   by `start_gdp_job`. Never pass `job_id` where `session_id` is expected. The schema
+   lock and governance approvals live on the session, so a follow-up without it starts
+   from scratch and cannot progress a build.
 
-   > **`X-Conversation-Id` header** — if your MCP client or adapter sets a stable
-   > `X-Conversation-Id` header per user conversation, the server uses it as the
-   > GDP `session_id` fallback when no explicit `session_id` argument is passed.
-   > This keeps multi-turn builds connected across reconnects without the model
-   > having to remember and replay the opaque `session_id` value. The explicit
-   > `session_id` argument always takes priority.
-
-You do not need to supply any retry or idempotency key. Re-sending the identical
-call while it is still running returns the SAME job rather than starting a second one.
+You do not need to supply any retry or idempotency key. Re-sending the identical call
+while it is still running returns the SAME job rather than starting a second one.
 
 **Example:**
 
 > User: *"Which autopay payments failed last cycle and how much is unpaid?"*
 >
 > 1. → `start_gdp_job(message="Which autopay payments failed last cycle and how much is unpaid?", workspace_id="ws-prod-01")`
-> 2. → returns `{"job_id": "job_abc123", "session_id": "ses_xyz", "status": "working", "job_status": "PENDING", "poll_after_s": 15, "resource_uri": "gdp://jobs/job_abc123", "resource_link": "gdp://jobs/job_abc123", "result": "", "error": ""}`
-> 3. → status is "working" — subscribe to `gdp://jobs/job_abc123` via `subscriptions/listen`
-> 4. → push arrives: thinking: "the unpaid figure needs the failed-payment source joined to the mandate table" — relay to user, keep waiting
-> 5. → push arrives: progress: "locating autopay source tables" — relay to user, keep waiting
-> 6. → push arrives: progress: "analysing failures" — relay to user, keep waiting
-> 7. → push arrives: status: "completed" — re-read resource, render result in `create_ui_app`; render mapping table if present
+> 2. → returns `{"job_id": "job_abc123", "session_id": "ses_xyz", "status": "working", "job_status": "PENDING", "poll_after_s": 15, "resource_uri": "gdp://jobs/job_abc123", "resource_link": "gdp://jobs/job_abc123"}` — ignore resource_uri/resource_link
+> 3. → status is "working" — begin polling
+> 4. → `check_gdp_job(job_id="job_abc123", wait=15, workspace_id="ws-prod-01")`
+> 5. → returns `{"status": "RUNNING", "progress": "locating autopay source tables"}` — relay progress to user, keep polling
+> 6. → `check_gdp_job(job_id="job_abc123", wait=15, workspace_id="ws-prod-01")`
+> 7. → returns `{"status": "COMPLETED", "result": "..."}` — render result in `create_ui_app`
 
 ## Procedure: Create Business Data Product
 
@@ -245,12 +246,10 @@ fragments the workspace.
 
 ### Step 1 — Check for similar products
 
-Before any creation work, search for existing products that might match.
-
 1. Call `start_gdp_job` with a discovery message describing what the user wants to build.
    Example: *"Find existing data products similar to: [user's description]"*
-2. Wait for push notifications and read the resource until `status: completed`.
-3. Render the similarity results exclusively in `create_ui_app` using a `table` component.
+2. Poll with `check_gdp_job(wait=15)` until `COMPLETED`. Relay progress as it arrives.
+3. Render similarity results exclusively in `create_ui_app` using a `table` component.
    Nothing goes into the chat conversation text.
 
    **Table columns (in order):**
@@ -264,14 +263,14 @@ Before any creation work, search for existing products that might match.
 
 ### Step 2 — Template decision
 
-- **If the user wants to use a template:** note which product they chose (by number, name, or description) and proceed to Step 3.
-- **If no similar products were found OR the user prefers to start fresh:** skip to Step 4 (pre-creation verification).
+- **If the user wants to use a template:** note which product they chose and proceed to Step 3.
+- **If no similar products were found OR the user prefers to start fresh:** skip to Step 4.
 
 ### Step 3 — Load template and propose values
 
-1. Call `start_gdp_job` asking the Supervisor to load the chosen product as a template and return all its editable field values.
-2. Wait for push notifications until `status: completed`.
-3. Render the proposed values exclusively in `create_ui_app` as a `table` component:
+1. Call `start_gdp_job` asking the Supervisor to load the chosen product as a template.
+2. Poll with `check_gdp_job(wait=15)` until `COMPLETED`. Relay progress as it arrives.
+3. Render proposed values exclusively in `create_ui_app` as a `table` component:
 
    | Field | Current Value | Editable? |
 
@@ -282,9 +281,7 @@ Before any creation work, search for existing products that might match.
 
 ### Step 4 — Pre-creation verification
 
-Before submitting the creation job:
-
-1. Collect any field overrides the user requested (in the current or previous turn).
+1. Collect any field overrides the user requested.
 2. Render the FINAL set of values in `create_ui_app` as a `table` component:
 
    | Field | Value |
@@ -294,49 +291,39 @@ Before submitting the creation job:
 3. In chat write only:
    *"Please confirm these values are correct. Reply 'yes' to create, or tell me what to change."*
 4. **DO NOT call `start_gdp_job` for creation until the user explicitly confirms.**
-   A single "yes", "looks good", or equivalent is sufficient.
 
 ### Step 5 — Create
 
-Once confirmed, call `start_gdp_job` with the full creation intent and all verified field values.
-Wait for push notifications and render the result following the standard GDP Supervisor Job procedure above.
+Once confirmed, call `start_gdp_job` with the full creation intent and verified field values.
+Poll with `check_gdp_job(wait=15)` until terminal and render the result per the standard procedure above.
 
 ## Procedure: User Asks to Cancel
 
-To actually stop a running job you MUST call the **`cancel_gdp_job`** tool. The event
-subscription alone does not cancel anything — dropping the subscription only stops the
-server *watching* the job; the job keeps running server-side until `cancel_gdp_job`
-reaches it.
-
-When the user says "cancel this" or "stop":
 1. Call `cancel_gdp_job(job_id=..., workspace_id=...)`.
-2. Tell the user: "Cancellation requested — the job will stop shortly. Work already completed is not rolled back."
-3. Keep watching the subscription: while cancellation is pending, pushes show
-   `status: working` (CANCEL_REQUESTED maps to working); the final push shows
-   `status: cancelled` once the job has stopped.
+2. Tell the user: *"Cancellation requested — the job will stop shortly. Work already completed is not rolled back."*
+3. Keep polling `check_gdp_job(job_id=..., wait=15)` until terminal (`COMPLETED`, `FAILED`, or `CANCELLED`).
+4. Report the final status to the user.
 
-Cancellation is a request, not a guarantee — work may continue briefly after the call.
-It does **not** undo work already done. If a dbt build already ran or lineage
+Cancellation does **not** undo work already done. If a dbt build already ran or lineage
 was already registered, those effects stand — cancelling means "do no more", not "roll back".
 
-If the job has already finished (terminal status), `cancel_gdp_job` returns an
-**error, not a no-op** — nothing is left to cancel. Check the last known status first.
+If the job has already finished, `cancel_gdp_job` returns a **409 error** — nothing is left
+to cancel. Call `check_gdp_job` and report the terminal status instead.
 
 ## Error Handling
 
 | Situation | Action |
 |-----------|--------|
-| Session already busy (409 from `start_gdp_job`) | The previous turn is still running. The error message contains `active_job_id=<id>` — extract that job ID, subscribe to `gdp://jobs/{active_job_id}` via `subscriptions/listen`, and wait for its push notifications. Resume the session once it completes. Offer to cancel it if the user wants to abandon it |
+| Session already busy (409 from `start_gdp_job`) | The previous turn is still running. The error message contains the suffix `(active_job_id=<uuid>)` — extract that job ID and poll it with `check_gdp_job(job_id=<active_job_id>, wait=15, workspace_id=...)` until terminal. Resume the session once it completes. Offer to cancel if the user wants to abandon it |
 | Capacity exceeded (429) | Inform the user the service is at capacity; retry after a short backoff |
-| Job not found (404) | Means no such job in this workspace — not that it finished. Check you are using the right `workspace_id` and the `job_id` exactly as returned |
+| Job not found (404) | Means no such job in this workspace — not that it finished. Check you are using the right `workspace_id` and `job_id` exactly as returned |
 | `list_workspaces` returns 403 | Expected for non-admin users. Ask the user for their workspace id and continue — job tools still work |
 | `list_workspaces` fails otherwise | Tell user the MCP server may be disconnected; ask them to check the connector or supply a workspace id |
 | `start_gdp_job` error | Surface the error verbatim and offer to retry |
-| `status: failed` with `job_status: ORPHANED` | Worker crashed mid-run — offer to start the job again |
-| `status: failed` with `job_status: PURGED` | Record aged out of retention — offer to resubmit |
-| `monitoring: degraded` in resource read | Go server temporarily lost sight of the job — **NOT a job failure**. Tell user monitoring is degraded but job is still running. Re-subscribe to `resource_uri` to restart monitoring with fresh credentials, or fall back to `check_gdp_job(job_id=...)` |
-| User asks to cancel mid-job | Call `cancel_gdp_job(job_id=..., workspace_id=...)`; inform the user work already done is not rolled back; keep watching the subscription until the `cancelled` push |
-| Cancel rejected (409 from `cancel_gdp_job`) | Job already finished — nothing to cancel; report the last known terminal status instead |
+| `status: failed` / `FAILED` with `ORPHANED` in `job_status` | Worker crashed mid-run — offer to start the job again |
+| `status: failed` / `FAILED` with `PURGED` in `job_status` | Record aged out of retention — offer to resubmit |
+| `input_required` (start_gdp_job) or `INPUT_REQUIRED` (check_gdp_job) | Read the question from `progress`, ask the user, pass their answer via `start_gdp_job` with same `session_id` |
+| Cancel rejected (409 from `cancel_gdp_job`) | Job already finished — call `check_gdp_job` and report its terminal status |
 | User's question is ambiguous | Ask one clarifying question before calling the tool |
 
 ## Tools
@@ -349,43 +336,62 @@ If the job has already finished (terminal status), `cancel_gdp_job` returns an
 
 ### GDP tools
 
-| Tool | When to use | Parameters | Returns |
-|------|------------|-----------|---------|
-| `start_gdp_job` | ALL GDP and data product questions | `message` (required), `workspace_id` (optional), `session_id` (optional — pass to continue a conversation) | `job_id`, `session_id`, `resource_uri`, `status` (working/input_required/completed/failed/cancelled), `job_status` (raw service-layer value) |
-| `cancel_gdp_job` | User asks to stop a running job | `job_id` (required), `workspace_id` (optional) | Cancel acknowledgement; job moves to CANCEL_REQUESTED then `cancelled`. Errors if the job already finished. Does NOT roll back completed work |
+#### start_gdp_job
 
-Progress and results arrive via push notifications on `resource_uri`.
+Starts a GDP Supervisor job. Use for ALL data product and GDP questions.
 
-**`gdp://jobs/{id}` resource read returns:**
+**Parameters:** `message` (required), `workspace_id` (optional), `session_id` (optional — pass to continue a conversation)
 
-| Field | Always present? | Meaning |
-|---|---|---|
-| `job_id` | yes | Job identifier |
-| `session_id` | yes | Session identifier |
-| `status` | yes | `working` / `input_required` / `completed` / `failed` / `cancelled` |
-| `job_status` | yes | Raw uppercase from kp-service-layer (e.g. `RUNNING`, `COMPLETED`, `ORPHANED`) |
-| `progress` | when running | Live progress message from the Supervisor |
-| `thinking` | while the Supervisor reasons | Supervisor's extended-thinking reasoning between tool calls — a **cumulative** moving tail (each read contains everything so far; relay only the newly-added part) that may change or clear between reads; absent when the Supervisor is not actively reasoning |
-| `result` | when completed | Final answer from the Supervisor |
-| `error` | when failed | Error detail from kp-service-layer |
-| `monitoring` | yes | `"ok"` normally; `"degraded"` if the Go server temporarily lost sight of the job |
-| `poll_error` | when degraded | Why monitoring is degraded — this is NOT the job's error |
+**Returns:**
 
-Jobs are visible to the whole workspace, so a `job_id` a colleague started can
-be referenced in the same conversation if needed — a 404 means no such job in
-this workspace, not that it finished.
+| Field | Type | Notes |
+|-------|------|-------|
+| `job_id` | string | Unique job identifier |
+| `session_id` | string | Conversation session — pass on follow-up turns |
+| `status` | string | Lowercase mapped: `working`, `input_required`, `completed`, `failed`, `cancelled` |
+| `job_status` | string | Raw uppercase from kp-service-layer: `PENDING`, `RUNNING`, `FAILED`, `ORPHANED`, `PURGED`, etc. |
+| `poll_after_s` | integer | Suggested polling interval in **seconds** (not milliseconds) |
+| `resource_uri` | string | `gdp://jobs/{id}` — **legacy clients: ignore** |
+| `resource_link` | string | Alias for `resource_uri` — **legacy clients: ignore** |
+| `result` | string | Populated when `status` is `completed` |
+| `error` | string | Populated when `status` is `failed` |
 
-`job_id` is NOT the `invocation_id` that `lock_schema`, `amend_model` and
-`reopen_schema` take — those are Supervisor-internal tools, not tools you call directly.
-Passing `job_id` where `invocation_id` is expected will fail.
+> **`poll_after_s` is in seconds.** Do not multiply by 1000. The field name is `poll_after_s` — not `poll_after_ms`.
+
+#### check_gdp_job
+
+Polls an in-progress job. For legacy clients only. Always pass `wait=15`.
+
+**Parameters:** `job_id` (required), `wait` (seconds, capped at 15 — always pass 15), `workspace_id` (optional)
+
+**Returns:** Raw pass-through of kp-service-layer response — no field transformation by the Go server.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `job_id` | string | Job identifier |
+| `session_id` | string | Session identifier |
+| `status` | string | **Raw uppercase**: `PENDING`, `RUNNING`, `COMPLETED`, `FAILED`, `CANCELLED`, `CANCEL_REQUESTED`, `INPUT_REQUIRED` |
+| `progress` | string | Human-readable progress or clarification question (present when `INPUT_REQUIRED`) |
+| `result` | string | Populated when `COMPLETED` |
+| `result_truncated` | boolean | Present if service-layer sends it — result was too large to return in full |
+| `error` | string | Populated when `FAILED` |
+
+> **`check_gdp_job` does NOT transform status.** Values are raw uppercase. This differs from `start_gdp_job`.
+
+#### cancel_gdp_job
+
+Requests cancellation of a running job. For legacy clients only.
+
+**Parameters:** `job_id` (required), `workspace_id` (optional)
+
+**Returns:** Raw pass-through of kp-service-layer cancel response.
 
 ## How answers are delivered
 
 The GDP Supervisor agent handles all data product and GDP questions end-to-end.
-Call `start_gdp_job` once and receive live progress and the final result via push notifications.
-Always relay progress messages to the user as they arrive.
+Call `start_gdp_job` once and poll using `check_gdp_job(wait=15)` until terminal.
+Always relay progress messages to the user as they arrive between polls.
 Always render results inside `create_ui_app` — never in the chat stream.
-Always show the source to target mappings locked for the data product to the user after schema is locked,
+Always show the source-to-target mappings locked for the data product to the user after schema is locked,
 rendered as a `table` component in `create_ui_app` with columns: Target Attribute | Source Column | Source URN | Confidence | Rationale.
 Never apply emoticons to the response you show to the user.
- 
