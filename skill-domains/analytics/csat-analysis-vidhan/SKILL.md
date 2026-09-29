@@ -1,98 +1,110 @@
 ---
 name: csat-analysis-vidhan
-title: Customer Satisfaction (CSAT) Analysis
-description: 'Analyze customer satisfaction survey data stored in Teradata to identify the main drivers of customer satisfaction and dissatisfaction. Use when a user asks to analyze CSAT scores, find reasons customers are happy or unhappy, explore satisfaction trends, or diagnose drivers of low NPS or CSAT ratings. Performs read-only queries against survey and feedback tables.'
+title: Customer Satisfaction Analysis
+description: 'Analyze customer satisfaction data in Teradata to identify the main reasons customers are satisfied or dissatisfied. Profile survey responses, complaint records, and customer features to surface actionable CSAT drivers, segment satisfaction by demographics, and quantify dissatisfaction themes. Triggers on requests to analyze CSAT, survey data, satisfaction drivers, or customer feedback.'
 domain: analytics
 metadata:
   author: Vidhan Bhonsle
-  version: 1.0.0
+  version: 2.0.0
 trigger:
   mode: MANUAL
   slash_commands: ['/csat-analysis-vidhan']
   keywords:
-    - 'customer satisfaction analysis'
-    - 'CSAT analysis'
-    - 'why are customers dissatisfied'
-    - 'satisfaction drivers'
-    - 'customer feedback analysis'
-    - 'NPS drivers'
+    - customer satisfaction analysis
+    - CSAT drivers
+    - survey response analysis
+    - satisfaction reasons
+    - dissatisfaction reasons
+    - customer feedback analysis
   intent_categories:
-    - 'customer-analytics'
-    - 'satisfaction-analysis'
-  min_confidence: 0.70
+    - customer-analytics
+    - satisfaction-analysis
+  min_confidence: 0.75
 prompt:
   constraints:
-    - 'NEVER execute INSERT, UPDATE, DELETE, DROP, CREATE, ALTER, or any DDL/DML that modifies data. Use only SELECT statements.'
-    - 'Always confirm the target database and table with the user before running analysis queries.'
-    - 'Do not fabricate data — only report findings that the queries actually return.'
-    - 'When row counts are large, use aggregations and sampling rather than selecting all rows.'
-    - 'Clearly state limitations of the analysis (sample size, missing data, correlation vs causation).'
+    - Use ONLY read-only SQL (SELECT). Never execute INSERT, UPDATE, DELETE, CREATE, DROP, or ALTER.
+    - Do not move data out of Teradata — all analysis runs in-database.
+    - Always verify table existence and column names before querying.
+    - Limit result sets to avoid excessive data transfer — use TOP, SAMPLE, or GROUP BY aggregations.
+    - Do not fabricate findings — every claim must be backed by query results.
   output_format: |
     Return a structured report with three sections:
-    1. **Summary of Findings** — Key drivers of satisfaction and dissatisfaction, ranked by impact or frequency.
-    2. **Supporting Evidence** — The SQL queries executed, result counts, and representative data points that back each finding.
-    3. **Limitations** — Sample size caveats, columns with high null rates, potential biases, and any assumptions made.
+    1. **Summary of Findings** — top satisfaction and dissatisfaction drivers, key metrics.
+    2. **Supporting Evidence** — the SQL queries executed and their result summaries.
+    3. **Limitations** — data gaps, sample size caveats, and analytical assumptions.
 tools:
   required_tools:
-    - teradata_tool_call
-    - teradata_list_patterns
+    - base_readQuery
+    - base_getTableColumns
+    - base_findTables
   preferred_order:
-    - teradata_tool_call
+    - base_findTables
+    - base_getTableColumns
+    - base_readQuery
 ---
 
-# Customer Satisfaction (CSAT) Analysis
+# Customer Satisfaction Analysis
 
 ## When to Use
-- User asks to analyze customer satisfaction or CSAT data in Teradata.
-- User wants to find the main reasons customers are satisfied or dissatisfied.
-- User asks about satisfaction trends, NPS drivers, or feedback patterns.
-- User has survey or feedback data in Teradata and wants actionable insights.
-- Do NOT use for building ML models on CSAT data — use `td-train-eval-model-indb` instead.
-- Do NOT use for data profiling only (column stats, nulls, distributions without a CSAT context) — use `td-data-profile` instead.
+- User asks to analyze customer satisfaction, CSAT scores, or survey data.
+- User wants to understand why customers are satisfied or dissatisfied.
+- User asks to segment satisfaction by customer demographics or behavior.
+- User wants to identify complaint themes or feedback patterns.
+- Do NOT use for predictive churn modeling — use `td-train-eval-model-indb` instead.
+- Do NOT use for general table profiling — use `td-data-profile` instead.
 
 ## Core Concepts
 
 | Term | Definition |
 |------|------------|
-| CSAT Score | A numeric rating (typically 1–5 or 1–10) capturing overall customer satisfaction. |
-| NPS | Net Promoter Score — derived from "likelihood to recommend" responses (Promoters 9–10, Passives 7–8, Detractors 0–6). |
-| Driver | A factor (product quality, support response time, price, etc.) that correlates with high or low satisfaction. |
-| Verbatim | Free-text feedback from customers, often paired with a numeric score. |
-| Segment | A customer grouping (by region, product, tenure, channel) used to slice satisfaction results. |
+| CSAT Score | Customer Satisfaction score, typically 1–5 or 1–10, from post-interaction surveys |
+| NPS | Net Promoter Score — measures likelihood to recommend (promoters vs detractors) |
+| Satisfaction Driver | A measurable factor (e.g., complaint count, resolution time) correlated with high CSAT |
+| Dissatisfaction Theme | A recurring category of complaint or low-score reason |
 
-## Procedure: Discover and Validate CSAT Data
+### Recommended Starting Tables
 
-1. **Ask the user** for the database and table (or tables) that hold customer satisfaction data. If not provided, use schema discovery tools to search for likely candidates.
-   ```
-   teradata_tool_call → base_searchTables with keyword "csat" or "satisfaction" or "survey" or "feedback"
-   ```
-2. **Inspect the table structure** to identify the satisfaction score column, any categorical driver columns, date/time columns, and customer segment columns. See [Table Discovery Guide](./references/table-discovery-guide.md) for detailed steps.
-3. **Validate data quality** — check row counts, null rates on key columns, and score distributions. Flag tables with fewer than 30 responses or columns with >50 % nulls because these weaken the analysis.
+These tables form a satisfaction-to-attrition analysis pipeline (all joined on `customer_id`):
 
-## Procedure: Analyze Satisfaction Drivers
+| Table | Role |
+|-------|------|
+| `clv_dim_customer` | Customer demographics and attributes |
+| `clv_survey_response` | Raw survey responses with satisfaction scores |
+| `clv_feature_customer` | Engineered customer features (tenure, activity metrics) |
+| `clv_score_attrition_v2` | Attrition risk scores for correlation analysis |
+| `clv_complaint` | Complaint records with categories and resolution status |
 
-1. **Compute overall satisfaction distribution** — count and percentage of responses by score value. This establishes the baseline.
-2. **Segment analysis** — break satisfaction scores by available dimensions (product, region, channel, customer tenure). Identify segments with statistically meaningful differences from the overall average.
-3. **Driver ranking** — for each categorical factor, compute the average satisfaction score and response count. Rank factors by their gap from the overall mean to surface the strongest positive and negative drivers. See [Driver Analysis Queries](./references/driver-analysis-queries.md) for SQL templates.
-4. **Trend analysis** (if date column exists) — compute monthly or quarterly average satisfaction scores to detect improving or declining trends.
-5. **Compile the report** using the output format specified in the frontmatter: Summary of Findings → Supporting Evidence → Limitations.
+Additional useful tables: `CSAT_SRVEY_ANLS`, `clv_feature_complaint`, `clv_fact_transaction`, `clv_fact_interaction`.
 
-## Procedure: Deep-Dive on Dissatisfaction
+## Procedure: Analyze Customer Satisfaction
 
-1. **Isolate low-score responses** — filter to scores in the bottom 25th percentile (or ≤ 2 on a 1–5 scale, ≤ 6 on a 1–10 scale).
-2. **Cross-tabulate** low scores against every available dimension to find which segments concentrate the most dissatisfaction.
-3. **If verbatim/text feedback exists**, sample representative comments from the lowest-scoring responses and surface common themes.
-4. **Report the top 3–5 dissatisfaction drivers** with counts, percentages, and example evidence.
+### Phase 1 — Discovery & Validation
+1. **Locate the relevant tables** using `base_findTables` — search for survey, satisfaction, complaint, and customer tables in the target database because the exact table names may vary by environment.
+2. **Inspect column metadata** with `base_getTableColumns` on each discovered table to confirm the presence of satisfaction score columns, customer identifiers, and join keys.
+3. **Sample a few rows** from each key table (use `SELECT TOP 10`) to understand data formats, value ranges, and null patterns before writing analytical queries.
+
+### Phase 2 — Satisfaction Landscape
+4. **Compute the overall CSAT distribution** — aggregate satisfaction scores into buckets and calculate mean, median, and standard deviation. See [analysis-queries.md](./references/analysis-queries.md) for query templates.
+5. **Segment satisfaction by demographics** — break down scores by age group, gender, region, or account type to identify which segments are most/least satisfied.
+6. **Trend over time** — if a date column exists, compute monthly or quarterly average CSAT to detect improving or declining satisfaction.
+
+### Phase 3 — Driver Identification
+7. **Analyze complaint categories** — aggregate complaints by category/type and cross-reference with satisfaction scores to find which complaint types most strongly correlate with low CSAT.
+8. **Identify satisfaction drivers** — compare feature values (tenure, transaction frequency, interaction count) between high-satisfaction and low-satisfaction cohorts to surface what differentiates them.
+9. **Quantify dissatisfaction themes** — rank the top reasons for low scores by frequency and severity (average score impact).
+
+### Phase 4 — Reporting
+10. **Compile the findings** into the three-section output format: Summary, Evidence, and Limitations.
+11. **Flag data quality issues** — report any columns with high null rates, skewed distributions, or insufficient sample sizes that limit confidence in the findings.
 
 ## Common Errors
 
 | Error | Cause | Fix |
 |-------|-------|-----|
-| No CSAT table found | User didn't specify a table and search returned nothing | Ask the user for the exact database.table name |
-| Score column has mixed scales | Some rows 1–5, others 1–10 | Detect distinct value ranges and normalize or analyze each scale separately |
-| Too few responses in a segment | Segment has < 30 rows | Merge small segments or caveat the finding as low-confidence |
-| High null rate on driver column | Data collection gap | Report the null rate and exclude nulls from that driver's analysis |
+| Table not found | Wrong database context or table name | Run `base_findTables` first; verify the database |
+| No satisfaction score column | Table schema differs from expected | Inspect columns with `base_getTableColumns`; adapt queries |
+| Skewed results from small segments | Demographic segment has < 30 records | Note the limitation; avoid drawing conclusions from tiny groups |
+| Timeout on large joins | Joining full fact tables without filters | Add date range or SAMPLE filters; aggregate before joining |
 
 ## References
-- [Table Discovery Guide](./references/table-discovery-guide.md) — How to locate and validate CSAT tables in Teradata.
-- [Driver Analysis Queries](./references/driver-analysis-queries.md) — Reusable SQL templates for satisfaction driver ranking and segmentation.
+- [Analysis Query Templates](./references/analysis-queries.md) — reusable SQL patterns for CSAT distribution, segmentation, and driver analysis.
