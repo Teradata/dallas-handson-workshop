@@ -1,6 +1,6 @@
 ---
 name: context-engine-mcp
-title: Teradata Context Engine MCP 
+title: Teradata Context Engine MCP
 description: 'The Teradata Context Engine is a software infrastructure layer that continuously collects, processes, stores, retrieves, and delivers relevant contextual information to applications and AI systems — enabling situation-aware decisions rather than treating each interaction in isolation. It acts as the situational awareness brain, answering: Who is the user? What are they doing? What do they need? What is relevant right now? This skill routes every data product, GDP, knowledge graph, lineage and data quality question to the GDP Supervisor, which answers all of them end-to-end. Use when asking about data products, GDP, entities, lineage, data quality. Triggers for /data-product command.'
 when_to_use: 'Triggers on: data product, GDP, governed data product, knowledge graph, lineage, upstream, downstream, data quality, quality score, subject area, entity, element, context engine'
 metadata:
